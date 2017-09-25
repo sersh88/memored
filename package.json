@@ -1,13 +1,13 @@
 {
-  "name": "memored",
-  "version": "1.1.1",
+  "name": "memored-promise",
+  "version": "1.2.0",
   "description": "Shared in-memory module for cluster applications",
   "main": "index.js",
   "scripts": {
     "dev": "mocha --ui bdd --reporter spec --no-exit --watch ./spec",
     "test": "mocha --ui bdd --reporter spec --no-exit ./spec"
   },
-  "author": "Paquitosoft",
+  "author": "sersh88",
   "license": "MIT",
   "keywords": [
     "cache",
@@ -16,15 +16,19 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/PaquitoSoft/memored.git"
+    "url": "https://github.com/sersh88/memored-promise.git"
   },
   "bugs": {
-    "url": "https://github.com/PaquitoSoft/memored/issues"
+    "url": "https://github.com/sersh88/memored-promise/issues"
   },
   "devDependencies": {
     "async": "^2.1.4",
     "chai": "^1.9.1",
     "faker": "^1.1.0",
-    "mocha": "^3.2.0"
+    "mocha": "^3.5.3",
+    "mocha-generators": "^2.0.0"
+  },
+  "dependencies": {
+    "bluebird": "^3.5.0"
   }
 }

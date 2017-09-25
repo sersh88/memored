@@ -10,18 +10,20 @@ Memored uses communication channel between master process and its workers to use
 ## Getting Started
 Install this module with _npm_:
 ```javascript
-npm install memored
+npm install memored-promise
 ```
 
 Store and read values is straightforward:
 ```javascript
-var cluster = require('cluster'),
-	memored = require('memored');
+const cluster = require('cluster'),
+	Promise = require('bluebird'),
+	memored = require('memored-promise');
 
 if (cluster.isMaster) {
 	cluster.fork();
 } else {
-	var han = {
+    (async () => {
+        const han = {
 			firstname: 'Han',
 			lastname: 'Solo'
 		},
@@ -29,28 +31,20 @@ if (cluster.isMaster) {
 			firstname: 'Luke',
 			lastname: 'Skywalker'
 		};
-
-	// Store and read
-	memored.store('character1', han, function() {
+		// Store and read
+		await memored.store('character1', han);
 		console.log('Value stored!');
-
-		memored.read('character1', function(err, value) {
-			console.log('Read value:', value);
-		});
-	});
-
-	// You can also set a ttl (milliseconds)
-	memored.store('character2', luke, 1000, function(err, expirationTime) {
+		const value = await memored.read('character1');
+		console.log('Read value:', value);
+        
+		// You can also set a ttl (milliseconds)
+		const expirationTime = await memored.store('character2', luke, 1000);
 		console.log('Value stored until:', new Date(expirationTime));
-
-		setTimeout(function() {
-			memored.read('character2', function(err, value) {
-				console.log('Value is gone?', value === undefined);
-
-				process.exit();
-			});
-		}, 1050);
-	});
+        await Promise.delay(1050);
+        await memored.read('character2');
+        console.log('Value is gone?', value === undefined);
+        process.exit();
+    })();
 }
 ```
 
@@ -62,9 +56,9 @@ This will trigger an internal function which looks for expired entries and delet
 
 Example:
 ```javascript
-var cluster = require('cluster'),
-	async = require('async'),
-	memored = require('memored');
+const cluster = require('cluster'),
+	Promise = require('bluebird'),
+	memored = require('memored-promise');
 
 if (cluster.isMaster) {
 
@@ -72,27 +66,15 @@ if (cluster.isMaster) {
 	memored.setup({ purgeInterval: 500});
 
 } else {
-
-	async.series({
-		storeValue: function(next) {
-			memored.store('key1', 'My simple string value', 100, next);
-		},
-		readCacheSize: function(next) {
-			memored.size(function(err, size) {
-				console.log('Current size is 1?', size === 1);
-				next();
-			});
-		},
-		wait: function(next) {
-			setTimeout(next, 600);
-		},
-		readCacheSizeAgain: function(next) {
-			memored.size(function(err, size) {
-				console.log('Current size is 0?', size === 0);
-				next();
-			});
-		}
-	}, process.exit);
+	(async () => {
+	    await memored.store('key1', 'My simple string value');
+	    let size = await memored.size();
+	    console.log('Current size is 1?', size === 1);
+	    await Promise.delay(600);
+	    size = await memored.size();
+	    console.log('Current size is 0?', size === 0);
+	    process.exit();
+	})();
 }
 ```
 
@@ -131,9 +113,11 @@ _It is intended to be called from a worker process_.
 	- _err_ {Error}: Optional error
 	- _expirationTime_ {Number}: The timestamp of the moment when this entry will expire. If _ttl_ is not used, this value will be undefined.
 
+if no callback provided - function will return Promise;
+
 **Examples**:
 ```javascript
-memored.store('key1', {firstname: 'Han', lastname: 'Solo'}, function() {
+memored.store('key1', {firstname: 'Han', lastname: 'Solo'}).then(function() {
 	console.log('Value stored!');
 });
 

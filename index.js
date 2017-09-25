@@ -1,11 +1,14 @@
 'use strict';
 
 var cluster = require('cluster'),
-	packageInfo = require('./package');
+    packageInfo = require('./package');
+var Promise = require('bluebird');
 
 var logger = {
-	log: function() {},
-	warn: function() {}
+    log: function () {
+    },
+    warn: function () {
+    }
 };
 
 var messagesCounter = 0;
@@ -24,144 +27,185 @@ var purgeIntervalObj;
 var cache = {};
 
 var masterMessagesHandlerMap = {
-	'read': _readCacheValue,
-	'store': _storeCacheValue,
-	'remove': _removeCacheValue,
-	'clean': _cleanCache,
-	'size': _getCacheSize,
-	'keys': _getCacheKeys,
-    'unknown': function(msg) { logger.warn('Received an invalid message type:', msg.type); }
+    'read': _readCacheValue,
+    'store': _storeCacheValue,
+    'readstore': _readstoreCacheValue,
+    'increment': _incrementCacheValue,
+    'remove': _removeCacheValue,
+    'clean': _cleanCache,
+    'size': _getCacheSize,
+    'keys': _getCacheKeys,
+    'unknown': function (msg) {
+        logger.warn('Received an invalid message type:', msg.type);
+    }
 };
 
 function CacheEntry(data) { // ttl -> milliseconds
-	this.key = data.key;
-	this.value = data.value;
-	this.creationTime = Date.now();
-	if (data.ttl) {
-		this.ttl = data.ttl;
-		this.expirationTime = this.creationTime + data.ttl;
-	}
+    this.key = data.key;
+    this.value = data.value;
+    this.creationTime = Date.now();
+    if (data.ttl) {
+        this.ttl = data.ttl;
+        this.expirationTime = this.creationTime + data.ttl;
+    }
 }
-CacheEntry.prototype.isExpired = function() {
-	return this.expirationTime && Date.now() > this.expirationTime;
+
+CacheEntry.prototype.isExpired = function () {
+    return this.expirationTime && Date.now() > this.expirationTime;
 };
-CacheEntry.prototype.toString = function() {
-	return "Key: " + this.key + "; Value: " + this.value + "; Ttl: " + this.ttl;
+CacheEntry.prototype.toString = function () {
+    return "Key: " + this.key + "; Value: " + this.value + "; Ttl: " + this.ttl;
 };
 
 function _findWorkerByPid(workerPid) {
-	var i = 0,
-		workerIds = Object.keys(cluster.workers),
-		len = workerIds.length,
-		worker;
+    var i = 0,
+        workerIds = Object.keys(cluster.workers),
+        len = workerIds.length,
+        worker;
 
-	for (; i < len; i++) {
-		if (cluster.workers[workerIds[i]].process.pid == workerPid) {
-			worker = cluster.workers[workerIds[i]];
-			break;
-		}
-	}
+    for (; i < len; i++) {
+        if (cluster.workers[workerIds[i]].process.pid === workerPid) {
+            worker = cluster.workers[workerIds[i]];
+            break;
+        }
+    }
 
-	return worker;
+    return worker;
 }
 
-function _getResultParamsValues(paramsObj) {
-	var result = [null],
-		prop;
-	if (paramsObj) {
-		for (prop in paramsObj) {
-			result.push(paramsObj[prop]);
-		}
-	}
-	return result;
+function _getResultParamsValues(paramsObj, noerr) {
+    var result = noerr ? [] : [null],
+        prop;
+    if (paramsObj) {
+        for (prop in paramsObj) {
+            result.push(paramsObj[prop]);
+        }
+    }
+    return result;
 }
 
 function _sendMessageToWorker(message) {
-	var worker = _findWorkerByPid(message.workerPid);
-	worker.send(message);
+    var worker = _findWorkerByPid(message.workerPid);
+    worker.send(message);
 }
 
 function _sendMessageToMaster(message) {
-	message.channel = 'memored';
-	message.workerPid = process.pid;
-	message.id = process.pid + '::' + messagesCounter++;
-	process.send(message);
-	if (message.callback) {
-		activeMessages[message.id] = message;
-	}
+    message.channel = 'memored';
+    message.workerPid = process.pid;
+    message.id = process.pid + '::' + messagesCounter++;
+    process.send(message);
+    if (message.callback || message.resolve) {
+        activeMessages[message.id] = message;
+    }
 }
 
 function _readCacheValue(message) {
-	var cacheEntry = cache[message.requestParams.key];
-	if (!cacheEntry) return _sendMessageToWorker(message);
-	if (cacheEntry.isExpired()) {
-		process.nextTick(function() {
-			delete cache[message.requestParams.key];
-		});
-		cacheEntry = null;
-	}
+    var cacheEntry = cache[message.requestParams.key];
+    if (!cacheEntry) return _sendMessageToWorker(message);
+    if (cacheEntry.isExpired()) {
+        process.nextTick(function () {
+            delete cache[message.requestParams.key];
+        });
+        cacheEntry = null;
+    }
 
-	if (cacheEntry) {
-		message.responseParams = {
-			value: cacheEntry.value
-		};
-		if (cacheEntry.expirationTime) {
-			message.responseParams.expirationTime = cacheEntry.expirationTime;
-		}
-	}
+    if (cacheEntry) {
+        message.responseParams = {
+            value: cacheEntry.value
+        };
+        if (cacheEntry.expirationTime) {
+            message.responseParams.expirationTime = cacheEntry.expirationTime;
+        }
+    }
 
-	_sendMessageToWorker(message);
+    _sendMessageToWorker(message);
 }
 
 function _storeCacheValue(message) {
-	cache[message.requestParams.key] = new CacheEntry(message.requestParams);
-	if (message.requestParams.ttl) {
-		message.responseParams = {
-			expirationTime: cache[message.requestParams.key].expirationTime
-		};
-	}
-	_sendMessageToWorker(message);
+    cache[message.requestParams.key] = new CacheEntry(message.requestParams);
+    if (message.requestParams.ttl) {
+        message.responseParams = {
+            expirationTime: cache[message.requestParams.key].expirationTime
+        };
+    }
+    _sendMessageToWorker(message);
+}
+
+function _readstoreCacheValue(message) {
+    var cacheEntry = cache[message.requestParams.key];
+    if (!cacheEntry || cacheEntry.isExpired()) {
+        message.responseParams = {};
+    } else {
+        message.responseParams = {
+            value: cacheEntry.value
+        };
+    }
+    cache[message.requestParams.key] = new CacheEntry(message.requestParams);
+    _sendMessageToWorker(message);
+}
+
+function _incrementCacheValue(message) {
+    var cacheEntry = cache[message.requestParams.key];
+    var entry = {
+        key: message.requestParams.key,
+        value: message.requestParams.value,
+        ttl: message.requestParams.ttl || (cacheEntry ? cacheEntry.ttl : undefined)
+    };
+    if (cacheEntry && !cacheEntry.isExpired()) {
+        entry.value += cacheEntry.value;
+    }
+    cache[entry.key] = new CacheEntry(entry);
+    if (message.requestParams.ttl) {
+        message.responseParams = {
+            expirationTime: cache[message.requestParams.key].expirationTime
+        };
+    } else if(cacheEntry.expirationTime) {
+        message.responseParams = {
+            expirationTime: cacheEntry.expirationTime
+        }
+    }
+    _sendMessageToWorker(message);
 }
 
 function _removeCacheValue(message) {
-	delete cache[message.requestParams.key];
-	_sendMessageToWorker(message);
+    delete cache[message.requestParams.key];
+    _sendMessageToWorker(message);
 }
 
 function _cleanCache(message) {
-	cache = {};
-	_sendMessageToWorker(message);
+    cache = {};
+    _sendMessageToWorker(message);
 }
 
 function _getCacheSize(message) {
-	message.responseParams = {
-		size: Object.keys(cache).length
-	};
-	_sendMessageToWorker(message);
+    message.responseParams = {
+        size: Object.keys(cache).length
+    };
+    _sendMessageToWorker(message);
 }
 
 function _getCacheKeys(message) {
-	message.responseParams = {
-		keys: Object.keys(cache)
-	};
-	_sendMessageToWorker(message);
+    message.responseParams = {
+        keys: Object.keys(cache)
+    };
+    _sendMessageToWorker(message);
 }
 
 function _purgeCache() {
-	var now = Date.now();
-	Object.keys(cache).forEach(function(cacheKey) {
-		if (cache[cacheKey].expirationTime && cache[cacheKey].expirationTime < now) {
-			delete cache[cacheKey];
-		}
-	});
+    var now = Date.now();
+    Object.keys(cache).forEach(function (cacheKey) {
+        if (cache[cacheKey].expirationTime && cache[cacheKey].expirationTime < now) {
+            delete cache[cacheKey];
+        }
+    });
 }
 
 function _masterIncomingMessagesHandler(message) {
     var handler;
-    
-	logger.log('Master received message:', message);
 
-	if (!message || message.channel !== 'memored') return false;
+    logger.log('Master received message:', message);
+
+    if (!message || message.channel !== 'memored') return false;
 
     handler = masterMessagesHandlerMap[message.type] || masterMessagesHandlerMap.unknown;
 
@@ -169,83 +213,96 @@ function _masterIncomingMessagesHandler(message) {
 }
 
 function _workerIncomingMessagesHandler(message) {
-	logger.log('Worker received message:', message);
+    logger.log('Worker received message:', message);
 
-	var pendingMessage;
+    var pendingMessage;
 
-	if (!message || message.channel !== 'memored') return false;
+    if (!message || message.channel !== 'memored') return false;
 
-	pendingMessage = activeMessages[message.id];
-	if (pendingMessage && pendingMessage.callback) {
-		pendingMessage.callback.apply(null, _getResultParamsValues(message.responseParams));
-		delete activeMessages[message.id];
-	}
+    pendingMessage = activeMessages[message.id];
+    if (pendingMessage && pendingMessage.callback) {
+        pendingMessage.callback.apply(null, _getResultParamsValues(message.responseParams));
+        delete activeMessages[message.id];
+    }
+    if(pendingMessage && pendingMessage.resolve) {
+        pendingMessage.resolve.apply(null, _getResultParamsValues(message.responseParams, true));
+        delete activeMessages[message.id];
+    }
 
 }
 
 if (cluster.isMaster) {
 
-	Object.keys(cluster.workers).forEach(function(workerId) {
-		cluster.workers[workerId].on('message', _masterIncomingMessagesHandler);
-	});
+    Object.keys(cluster.workers).forEach(function (workerId) {
+        cluster.workers[workerId].on('message', _masterIncomingMessagesHandler);
+    });
 
-	// Listen for new workers so we can listen to its messages
-	cluster.on('fork', function(worker) {
-		worker.on('message', _masterIncomingMessagesHandler);
-	});
+    // Listen for new workers so we can listen to its messages
+    cluster.on('fork', function (worker) {
+        worker.on('message', _masterIncomingMessagesHandler);
+    });
 
-	// TODO: Only for testing purposes
-	// setInterval(function() {
-	//	logger.log('\n------------------------------------------');
-	//	logger.log(cache);
-	//	logger.log('------------------------------------------\n');
-	// }, 2000).unref();
+    // TODO: Only for testing purposes
+    // setInterval(function() {
+    //	logger.log('\n------------------------------------------');
+    //	logger.log(cache);
+    //	logger.log('------------------------------------------\n');
+    // }, 2000).unref();
 
 } else {
 
-	process.on('message', _workerIncomingMessagesHandler);
+    process.on('message', _workerIncomingMessagesHandler);
 
 }
 
 function _setup(options) {
-	options = options || {};
-	logger = options.logger || logger;
+    options = options || {};
+    logger = options.logger || logger;
 
-	if (cluster.isMaster) {
+    if (cluster.isMaster) {
 
-		if (options.mockData) {
-			options.mockData.forEach(function(mock) {
-				// key, value, ttl
-				cache[mock.key] = new CacheEntry(mock);
-			});
-		}
+        if (options.mockData) {
+            options.mockData.forEach(function (mock) {
+                // key, value, ttl
+                cache[mock.key] = new CacheEntry(mock);
+            });
+        }
 
-		if (options.purgeInterval) {
-			purgeIntervalObj = setInterval(function() {
-				_purgeCache();
-			}, options.purgeInterval).unref();
-		}
-	}
+        if (options.purgeInterval) {
+            purgeIntervalObj = setInterval(function () {
+                _purgeCache();
+            }, options.purgeInterval).unref();
+        }
+    }
 }
 
 function _read(key, callback) {
-	if (cluster.isWorker) {
-		_sendMessageToMaster({
-			type: 'read',
-			requestParams: {
-				key: key
-			},
-			callback: callback
-		});
-	} else {
-		logger.warn('Memored::read# Cannot call this function from master process');
-	}
+    if (cluster.isWorker) {
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'read',
+                requestParams: {
+                    key: key
+                },
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'read',
+            requestParams: {
+                key: key
+            },
+            callback: callback
+        });
+    } else {
+        logger.warn('Memored::read# Cannot call this function from master process');
+    }
 }
 
 function _multiRead(keys, callback) {
     var counter = 0,
         results = {};
-    
+
     function _multiReadCallback(err, value, expirationTime) {
         if (value) {
             results[keys[counter]] = {
@@ -253,59 +310,131 @@ function _multiRead(keys, callback) {
                 expirationTime: expirationTime
             };
         }
-        
+
         if (++counter >= keys.length) {
             callback(err, results);
         }
     }
-    
+
     if (cluster.isWorker) {
         if (!Array.isArray(keys)) {
             return logger.warn('Memored::multiRead# First parameter must be an array');
         }
-    
-        keys.forEach(function(key) {
+
+        keys.forEach(function (key) {
             _read(key, _multiReadCallback);
         });
-	} else {
-		logger.warn('Memored::read# Cannot call this function from master process');
-	}
+    } else {
+        logger.warn('Memored::read# Cannot call this function from master process');
+    }
 }
 
 function _store(key, value, ttl, callback) {
-	if (cluster.isWorker) {
-		if (typeof ttl === 'function') {
-			callback = ttl;
-			ttl = undefined;
-		}
+    if (cluster.isWorker) {
+        if (typeof ttl === 'function') {
+            callback = ttl;
+            ttl = undefined;
+        }
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'store',
+                requestParams: {
+                    key: key,
+                    value: value,
+                    ttl: ttl
+                },
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'store',
+            requestParams: {
+                key: key,
+                value: value,
+                ttl: ttl
+            },
+            callback: callback
+        });
+    } else {
+        logger.warn('Memored::store# Cannot call this function from master process');
+    }
+}
 
-		_sendMessageToMaster({
-			type: 'store',
-			requestParams: {
-				key: key,
-				value: value,
-				ttl: ttl
-			},
-			callback: callback
-		});
-	} else {
-		logger.warn('Memored::store# Cannot call this function from master process');
-	}
+function _readstore(key, value, ttl, callback) {
+    if (cluster.isWorker) {
+        if (typeof ttl === 'function') {
+            callback = ttl;
+            ttl = undefined;
+        }
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'readstore',
+                requestParams: {
+                    key: key,
+                    value: value,
+                    ttl: ttl
+                },
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'readstore',
+            requestParams: {
+                key: key,
+                value: value,
+                ttl: ttl
+            },
+            callback: callback
+        });
+    } else {
+        logger.warn('Memored::readstore# Cannot call this function from master process');
+    }
+}
+
+function _increment(key, value, ttl, callback) {
+    if (cluster.isWorker) {
+        if (typeof ttl === 'function') {
+            callback = ttl;
+            ttl = undefined;
+        }
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'increment',
+                requestParams: {
+                    key: key,
+                    value: value,
+                    ttl: ttl
+                },
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'increment',
+            requestParams: {
+                key: key,
+                value: value,
+                ttl: ttl
+            },
+            callback: callback
+        });
+    } else {
+        logger.warn('Memored::increment# Cannot call this function from master process');
+    }
 }
 
 function _multiStore(map, ttl, callback) {
     var keys,
         _expirationTime,
         counter = 0;
-                
+
     if (cluster.isWorker) {
         if (typeof ttl === 'function') {
-			callback = ttl;
-			ttl = undefined;
-		}
-        
+            callback = ttl;
+            ttl = undefined;
+        }
+
         keys = Object.keys(map);
-        keys.forEach(function(key) {
+        keys.forEach(function (key) {
             _store(key, map[key], ttl, function _callback(err, expirationTime) {
                 counter++;
                 if (keys[0] === key) {
@@ -321,99 +450,138 @@ function _multiStore(map, ttl, callback) {
 }
 
 function _remove(key, callback) {
-	if (cluster.isWorker) {
-		_sendMessageToMaster({
-			type: 'remove',
-			requestParams: {
-				key: key
-			},
-			callback: callback
-		});
-	} else {
-		logger.warn('Memored::remove# Cannot call this function from master process');
-	}
+    if (cluster.isWorker) {
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'remove',
+                requestParams: {
+                    key: key
+                },
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'remove',
+            requestParams: {
+                key: key
+            },
+            callback: callback
+        });
+    } else {
+        logger.warn('Memored::remove# Cannot call this function from master process');
+    }
 }
 
 function _multiRemove(keys, callback) {
     var counter = 0;
-    
+
     function _multiRemoveCallback() {
         if (++counter >= keys.length && callback) {
             callback();
         }
     }
-    
+
     if (cluster.isWorker) {
         if (!Array.isArray(keys)) {
             return logger.warn('Memored::multiRemove# First parameter must be an array');
         }
-        
-        keys.forEach(function(key) {
+
+        keys.forEach(function (key) {
             _remove(key, _multiRemoveCallback);
         });
-    
-	} else {
-		logger.warn('Memored::remove# Cannot call this function from master process');
-	}
+
+    } else {
+        logger.warn('Memored::remove# Cannot call this function from master process');
+    }
 }
 
 function _clean(callback) {
-	if (cluster.isWorker) {
-		_sendMessageToMaster({
-			type: 'clean',
-			callback: callback
-		});
-	} else {
-		logger.warn('Memored::clean# Cannot call this function from master process');
-	}
+    if (cluster.isWorker) {
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'clean',
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'clean',
+            callback: callback
+        });
+    } else {
+        logger.warn('Memored::clean# Cannot call this function from master process');
+    }
 }
 
 function _size(callback) {
-	if (cluster.isWorker) {
-		_sendMessageToMaster({
-			type: 'size',
-			callback: callback
-		});
-	} else {
-		setImmediate(callback, null, {
-			size: Object.keys(cache).length
-		});
-	}
+    if (cluster.isWorker) {
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'size',
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'size',
+            callback: callback
+        });
+    } else {
+        if(!callback) return new Promise(resolve => {
+            setImmediate(resolve, {
+                size: Object.keys(cache).length
+            });
+        });
+        setImmediate(callback, null, {
+            size: Object.keys(cache).length
+        });
+    }
 }
 
 function _reset() {
-	if (cluster.isMaster) {
-		clearInterval(purgeIntervalObj);
+    if (cluster.isMaster) {
+        clearInterval(purgeIntervalObj);
         cache = {};
-	} else {
-		logger.warn('Memored::reset# Cannot call this function from a worker process');
-	}
+    } else {
+        logger.warn('Memored::reset# Cannot call this function from a worker process');
+    }
 }
 
 function _keys(callback) {
-	if (cluster.isWorker) {
-		_sendMessageToMaster({
-			type: 'keys',
-			callback: callback
-		});
-	} else {
-		setImmediate(callback, {
-			keys: Object.keys(cache)
-		});
-	}
+    if (cluster.isWorker) {
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'keys',
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'keys',
+            callback: callback
+        });
+    } else {
+        return new Promise(resolve => {
+            setImmediate(resolve, {
+                keys: Object.keys(cache)
+            });
+        });
+        setImmediate(callback, null, {
+            keys: Object.keys(cache)
+        });
+    }
 }
 
 module.exports = {
-	version: packageInfo.version,
-	setup: _setup,
-	read: _read,
+    version: packageInfo.version,
+    setup: _setup,
+    read: _read,
+    readstore: _readstore,
+    increment: _increment,
     multiRead: _multiRead,
-	store: _store,
+    store: _store,
     multiStore: _multiStore,
-	remove: _remove,
+    remove: _remove,
     multiRemove: _multiRemove,
-	clean: _clean,
-	size: _size,
-	reset: _reset,
-	keys: _keys
+    clean: _clean,
+    size: _size,
+    reset: _reset,
+    keys: _keys
 };

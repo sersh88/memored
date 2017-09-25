@@ -1,37 +1,31 @@
-var cluster = require('cluster'),
-	memored = require('../index');
+const cluster = require('cluster'),
+    Promise = require('bluebird'),
+    memored = require('../index');
 
 if (cluster.isMaster) {
-	cluster.fork();
+    cluster.fork();
 } else {
-	var han = {
-			firstname: 'Han',
-			lastname: 'Solo'
-		},
-		luke = {
-			firstname: 'Luke',
-			lastname: 'Skywalker'
-		};
+    (async () => {
+        const han = {
+                firstname: 'Han',
+                lastname: 'Solo'
+            },
+            luke = {
+                firstname: 'Luke',
+                lastname: 'Skywalker'
+            };
+        // Store and read
+        await memored.store('character1', han);
+        console.log('Value stored!');
+        const value = await memored.read('character1');
+        console.log('Read value:', value);
 
-	// Store and read
-	memored.store('character1', han, function() {
-		console.log('Value stored!');
-
-		memored.read('character1', function(err, value) {
-			console.log('Read value:', value);
-		});
-	});
-
-	// You can also set a ttl (milliseconds)
-	memored.store('character2', luke, 1000, function(err, expirationTime) {
-		console.log('Value stored until:', new Date(expirationTime));
-
-		setTimeout(function() {
-			memored.read('character2', function(err, value) {
-				console.log('Value is gone?', value === undefined);
-
-				process.exit();
-			});
-		}, 1050);
-	});
+        // You can also set a ttl (milliseconds)
+        const expirationTime = await memored.store('character2', luke, 1000);
+        console.log('Value stored until:', new Date(expirationTime));
+        await Promise.delay(1050);
+        await memored.read('character2');
+        console.log('Value is gone?', value === undefined);
+        process.exit();
+    })();
 }
