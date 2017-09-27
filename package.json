@@ -1,6 +1,6 @@
 {
   "name": "memored-promise",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Shared in-memory module for cluster applications",
   "main": "index.js",
   "scripts": {
