@@ -156,7 +156,31 @@ describe('Memored test suite', function () {
                     }
                 }, done)
             });
-
+            it('Should store if not exists', function (done) {
+                async.series({
+                    storeNx: function (next) {
+                        memored.storenx('nxkey', 'test', 50, next);
+                    },
+                    tryAfter25ms: function (next) {
+                        setTimeout(() => {
+                            memored.storenx('nxkey', 'test1', function (err, stored) {
+                                expect(err).to.equal(null);
+                                expect(stored).to.equal(false);
+                                next();
+                            });
+                        }, 25);
+                    },
+                    tryAfter50ms: function (next) {
+                        setTimeout(() => {
+                            memored.storenx('nxkey', 'test2', function (err, stored) {
+                                expect(err).to.equal(null);
+                                expect(stored).to.equal(true);
+                                next();
+                            });
+                        }, 26);
+                    },
+                }, done)
+            });
             it('Should store several values at the same time in the cache', function (done) {
                 var users = {
                     'user1': _createUser(),

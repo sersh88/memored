@@ -29,6 +29,7 @@ var cache = {};
 var masterMessagesHandlerMap = {
     'read': _readCacheValue,
     'store': _storeCacheValue,
+    'storenx': _storeNxCacheValue,
     'readstore': _readstoreCacheValue,
     'increment': _incrementCacheValue,
     'remove': _removeCacheValue,
@@ -127,6 +128,20 @@ function _storeCacheValue(message) {
         message.responseParams = {
             expirationTime: cache[message.requestParams.key].expirationTime
         };
+    }
+    _sendMessageToWorker(message);
+}
+function _storeNxCacheValue(message) {
+    var cacheEntry = cache[message.requestParams.key];
+    if(!cacheEntry || cacheEntry.isExpired()) {
+        cache[message.requestParams.key] = new CacheEntry(message.requestParams);
+        message.responseParams = {
+            set: true
+        }
+    } else {
+        message.responseParams = {
+            set: false
+        }
     }
     _sendMessageToWorker(message);
 }
@@ -360,6 +375,37 @@ function _store(key, value, ttl, callback) {
     }
 }
 
+function _storenx(key, value, ttl, callback) {
+    if (cluster.isWorker) {
+        if (typeof ttl === 'function') {
+            callback = ttl;
+            ttl = undefined;
+        }
+        if(!callback) return new Promise(resolve => {
+            _sendMessageToMaster({
+                type: 'storenx',
+                requestParams: {
+                    key: key,
+                    value: value,
+                    ttl: ttl
+                },
+                resolve: resolve
+            });
+        });
+        _sendMessageToMaster({
+            type: 'storenx',
+            requestParams: {
+                key: key,
+                value: value,
+                ttl: ttl
+            },
+            callback: callback
+        });
+    } else {
+        logger.warn('Memored::storenx# Cannot call this function from master process');
+    }
+}
+
 function _readstore(key, value, ttl, callback) {
     if (cluster.isWorker) {
         if (typeof ttl === 'function') {
@@ -575,6 +621,7 @@ module.exports = {
     read: _read,
     readstore: _readstore,
     increment: _increment,
+    storenx: _storenx,
     multiRead: _multiRead,
     store: _store,
     multiStore: _multiStore,
